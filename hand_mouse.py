@@ -1,16 +1,19 @@
 """
-🖐️ Hand Mouse Controller
-Controla o cursor do mouse com a mão usando webcam.
+Hand Mouse Controller
+Controla o cursor do mouse com a mão usando webcam (roda em segundo plano).
 
 INSTALAÇÃO:
-    pip install mediapipe opencv-python pyautogui
+    pip install mediapipe opencv-python pyautogui pynput
 
 GESTOS:
-    - Mão aberta movendo             → Move o cursor
-    - Indicador empurra pra frente   → Clique esquerdo
-    - Dedo médio empurra pra frente  → Clique direito
+    - Mão direita movendo  → Move o cursor
+    - Pinça mão direita    → Clique esquerdo
+    - Pinça mão esquerda   → Clique direito
+
+PARAR: Ctrl+Shift+Q
 """
 
+import threading
 import cv2
 import pyautogui
 import time
@@ -20,6 +23,7 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision import HandLandmarker, HandLandmarkerOptions
+from pynput import keyboard
 
 # ── Configurações ─────────────────────────────────────────
 CAMERA_INDEX      = 0
@@ -28,6 +32,8 @@ MOVE_MARGIN       = 0.15
 CLICK_COOLDOWN    = 0.4
 PINCH_THRESH      = 0.05   # distância normalizada para considerar toque
 # ──────────────────────────────────────────────────────────
+
+STOP_HOTKEY = {keyboard.Key.ctrl_l, keyboard.Key.shift, keyboard.KeyCode(char='q')}
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0
@@ -88,37 +94,28 @@ class SmoothCursor:
         pyautogui.moveTo(int(self.x), int(self.y))
 
 
-def draw_landmarks_on_frame(frame, landmarks):
-    """Desenha os pontos da mão no frame manualmente."""
-    h, w = frame.shape[:2]
-    connections = [
-        (0,1),(1,2),(2,3),(3,4),
-        (0,5),(5,6),(6,7),(7,8),
-        (0,9),(9,10),(10,11),(11,12),
-        (0,13),(13,14),(14,15),(15,16),
-        (0,17),(17,18),(18,19),(19,20),
-        (5,9),(9,13),(13,17)
-    ]
-    pts = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
-    for a, b in connections:
-        cv2.line(frame, pts[a], pts[b], (255, 255, 255), 2)
-    for i, (x, y) in enumerate(pts):
-        color = (0, 255, 200) if i in [8, 12] else (0, 200, 255)
-        cv2.circle(frame, (x, y), 5, color, -1)
-
-
 def main():
+    stop_event = threading.Event()
+    pressed_keys = set()
+
+    def on_press(key):
+        pressed_keys.add(key)
+        if all(k in pressed_keys for k in STOP_HOTKEY):
+            print("Hand Mouse: encerrando...")
+            stop_event.set()
+
+    def on_release(key):
+        pressed_keys.discard(key)
+
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-    cursor          = SmoothCursor(SMOOTHING)
+    cursor         = SmoothCursor(SMOOTHING)
     right_detector = PinchDetector()
     left_detector  = PinchDetector()
     last_click_time = 0
 
-    # Nova API do MediaPipe
-    base_options = python.BaseOptions(model_asset_path=None)
     options = HandLandmarkerOptions(
         base_options=python.BaseOptions(model_asset_buffer=_load_hand_model()),
         num_hands=2,
@@ -128,29 +125,23 @@ def main():
         running_mode=vision.RunningMode.VIDEO
     )
 
-    print("🖐️  Hand Mouse iniciado! Pressione 'Q' na janela para sair.")
+    print("Hand Mouse iniciado! Pressione Ctrl+Shift+Q para encerrar.")
 
-    with HandLandmarker.create_from_options(options) as landmarker:
+    with keyboard.Listener(on_press=on_press, on_release=on_release) as listener, \
+         HandLandmarker.create_from_options(options) as landmarker:
         frame_ts = 0
-        while cap.isOpened():
+        while cap.isOpened() and not stop_event.is_set():
             ok, frame = cap.read()
             if not ok:
                 break
 
-            frame = cv2.flip(frame, 1)
-            h, w  = frame.shape[:2]
+            frame    = cv2.flip(frame, 1)
             frame_ts += 1
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image  = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
             result    = landmarker.detect_for_video(mp_image, frame_ts)
 
-            cv2.rectangle(frame, (0, 0), (w, 40), (20, 20, 20), -1)
-            cv2.putText(frame, "Hand Mouse  |  Q = sair", (10, 28),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-            status_text  = "sem mao detectada"
-            status_color = (50, 50, 255)
             right_lm = None
             left_lm  = None
 
@@ -172,36 +163,16 @@ def main():
                 if right_detector.update(right_lm) and now - last_click_time > CLICK_COOLDOWN:
                     pyautogui.click()
                     last_click_time = now
-                    status_text, status_color = "CLIQUE ESQUERDO", (0, 255, 100)
-                elif right_detector.pinching:
-                    status_text, status_color = "mao direita pincando...", (0, 220, 80)
-                else:
-                    status_text, status_color = "mao direita - movendo", (180, 180, 180)
-
-                draw_landmarks_on_frame(frame, right_lm)
 
             if left_lm is not None:
                 if left_detector.update(left_lm) and now - last_click_time > CLICK_COOLDOWN:
                     pyautogui.rightClick()
                     last_click_time = now
-                    status_text, status_color = "CLIQUE DIREITO", (0, 150, 255)
-                elif left_detector.pinching:
-                    status_text, status_color = "mao esquerda pincando...", (0, 120, 220)
-                else:
-                    status_text, status_color = "mao esquerda detectada", (150, 150, 200)
 
-                draw_landmarks_on_frame(frame, left_lm)
-
-            cv2.putText(frame, status_text, (10, h - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
-            cv2.imshow("Hand Mouse", frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+        listener.stop()
 
     cap.release()
-    cv2.destroyAllWindows()
-    print("👋 Hand Mouse encerrado.")
+    print("Hand Mouse encerrado.")
 
 
 def _load_hand_model():
