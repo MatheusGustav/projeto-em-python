@@ -7,13 +7,22 @@ import glob
 import sys
 import os
 import signal
+import logging
 
 import evdev
 from evdev import ecodes
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_mouse.py")
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hotkey_daemon.log")
 HOTKEY_META = {ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHTMETA}
 HOTKEY_KEY = ecodes.KEY_M
+
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+log = logging.getLogger(__name__)
 
 
 def find_keyboards():
@@ -32,15 +41,24 @@ def find_keyboards():
 def main():
     keyboards = find_keyboards()
     if not keyboards:
-        print("Nenhum teclado encontrado em /dev/input/", file=sys.stderr)
+        msg = "Nenhum teclado encontrado em /dev/input/"
+        print(msg, file=sys.stderr)
+        log.error(msg)
         sys.exit(1)
 
+    log.info(f"Monitorando {len(keyboards)} teclado(s). Pressione Super+M para alternar hand_mouse.")
     print(f"Monitorando {len(keyboards)} teclado(s). Pressione Super+M para alternar hand_mouse.")
 
     meta_pressed = False
     process = None
 
     fds = {dev.fd: dev for dev in keyboards}
+
+    # Abre arquivo de log do hand_mouse para capturar erros do subprocesso
+    hand_mouse_log = open(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_mouse_output.log"),
+        "a",
+    )
 
     while True:
         r, _, _ = select.select(fds.keys(), [], [], 1.0)
@@ -61,13 +79,17 @@ def main():
                         if process is None or process.poll() is not None:
                             process = subprocess.Popen(
                                 [sys.executable, SCRIPT],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
+                                stdout=hand_mouse_log,
+                                stderr=hand_mouse_log,
+                                env=os.environ.copy(),
                             )
-                            print(f"hand_mouse iniciado (pid {process.pid})")
+                            msg = f"hand_mouse iniciado (pid {process.pid})"
+                            log.info(msg)
+                            print(msg)
                         else:
                             os.kill(process.pid, signal.SIGTERM)
                             process = None
+                            log.info("hand_mouse encerrado")
                             print("hand_mouse encerrado")
             except OSError:
                 pass
