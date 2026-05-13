@@ -3,12 +3,10 @@ Hand Mouse Controller v2
 Controla o cursor com a mão via webcam. Roda em segundo plano.
 
 GESTOS (mão direita):
-    - Dedo indicador estendido     → Move o cursor (posição do dedo = posição na tela)
-    - Indicador + polegar pinçados → Clique esquerdo
-    - Sinal de paz (dedos V)       → Scroll vertical
-
-GESTOS (mão esquerda):
-    - Indicador + polegar pinçados → Clique direito
+    - Dedo indicador estendido → Move o cursor (posição do dedo = posição na tela)
+    - Levanta o polegar        → Clique esquerdo
+    - Levanta o mindinho       → Clique direito
+    - Sinal de paz (dedos V)   → Scroll vertical
 
 PARAR: Ctrl+Shift+Q
 """
@@ -51,7 +49,7 @@ pyautogui.PAUSE    = 0
 SCREEN_W, SCREEN_H = pyautogui.size()
 
 # Índices dos landmarks do MediaPipe
-THUMB_TIP  = 4
+THUMB_TIP  = 4;  THUMB_IP   = 3
 INDEX_TIP  = 8;  INDEX_PIP  = 6
 MIDDLE_TIP = 12; MIDDLE_PIP = 10
 RING_TIP   = 16; RING_PIP   = 14
@@ -99,19 +97,16 @@ class OneEuroFilter:
 
 # ── Detecção de gestos ─────────────────────────────────────────────────────────
 
-class PinchDetector:
-    """Detecta pinça com debounce: exige N frames consecutivos para confirmar."""
+class GestureDetector:
+    """Detecta um gesto booleano com debounce: exige N frames consecutivos para confirmar."""
 
-    def __init__(self, tip, frames=PINCH_FRAMES):
-        self.tip    = tip
+    def __init__(self, frames=PINCH_FRAMES):
         self.frames = frames
         self._count = 0
         self.active = False
 
-    def update(self, lm):
-        dist = math.hypot(lm[self.tip].x - lm[THUMB_TIP].x,
-                          lm[self.tip].y - lm[THUMB_TIP].y)
-        if dist < PINCH_THRESH:
+    def update(self, triggered: bool):
+        if triggered:
             self._count = min(self._count + 1, self.frames)
         else:
             self._count = 0
@@ -119,7 +114,7 @@ class PinchDetector:
 
         if self._count >= self.frames and not self.active:
             self.active = True
-            return True  # evento: pinça confirmada agora
+            return True  # evento: gesto confirmado agora
         return False
 
     def reset(self):
@@ -160,8 +155,8 @@ def main():
 
     filt_x             = OneEuroFilter(fps)
     filt_y             = OneEuroFilter(fps)
-    click_det          = PinchDetector(INDEX_TIP)  # mão direita  → clique esquerdo
-    rclick_det         = PinchDetector(INDEX_TIP)  # mão esquerda → clique direito
+    lclick_det         = GestureDetector()  # polegar levantado → clique esquerdo
+    rclick_det         = GestureDetector()  # mindinho levantado → clique direito
     last_click_t       = 0.0
     scroll_prev_y      = None
     prev_right_visible = False
@@ -192,14 +187,12 @@ def main():
             mp_img    = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             result    = landmarker.detect_for_video(mp_img, frame_ts)
 
-            right_lm = left_lm = None
+            right_lm = None
             if result.hand_landmarks:
                 for lm, hand in zip(result.hand_landmarks, result.handedness):
                     # Frame espelhado: MediaPipe "Left" = mão direita do usuário
                     if hand[0].display_name == "Left":
                         right_lm = lm
-                    else:
-                        left_lm = lm
 
             now = time.time()
 
@@ -235,23 +228,25 @@ def main():
                 else:
                     scroll_prev_y = None
 
-                # Pinça indicador+polegar → clique esquerdo (desativado no modo scroll)
+                # Gestos de clique — só ativos fora do modo scroll
                 if not (idx_ext and mid_ext):
-                    if click_det.update(right_lm) and now - last_click_t > CLICK_COOLDOWN:
+                    thumb_up  = right_lm[THUMB_TIP].y < right_lm[THUMB_IP].y
+                    pinky_ext = _extended(right_lm, PINKY_TIP, PINKY_PIP)
+
+                    if lclick_det.update(thumb_up) and now - last_click_t > CLICK_COOLDOWN:
                         pyautogui.click()
                         last_click_t = now
+
+                    if rclick_det.update(pinky_ext) and now - last_click_t > CLICK_COOLDOWN:
+                        pyautogui.rightClick()
+                        last_click_t = now
                 else:
-                    click_det.reset()
+                    lclick_det.reset()
+                    rclick_det.reset()
 
             else:
                 prev_right_visible = False
                 scroll_prev_y      = None
-
-            # ── Mão esquerda: clique direito ───────────────────────────────────
-            if left_lm is not None:
-                if rclick_det.update(left_lm) and now - last_click_t > CLICK_COOLDOWN:
-                    pyautogui.rightClick()
-                    last_click_t = now
 
         listener.stop()
 
