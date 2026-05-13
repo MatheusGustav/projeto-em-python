@@ -228,8 +228,10 @@ def main():
                     filt_x.reset();   filt_y.reset()
                 prev_right_visible = True
 
-                idx_ext = _extended(right_lm, INDEX_TIP, INDEX_PIP)
-                mid_ext = _extended(right_lm, MIDDLE_TIP, MIDDLE_PIP)
+                idx_ext   = _extended(right_lm, INDEX_TIP, INDEX_PIP)
+                mid_ext   = _extended(right_lm, MIDDLE_TIP, MIDDLE_PIP)
+                thumb_up  = right_lm[THUMB_TIP].y < right_lm[THUMB_IP].y
+                pinky_ext = _extended(right_lm, PINKY_TIP, PINKY_PIP)
 
                 if idx_ext and mid_ext:
                     # Sinal de paz (V) → scroll vertical
@@ -243,25 +245,23 @@ def main():
                     scroll_prev_y = ref_y
 
                 elif idx_ext:
-                    # Indicador estendido → mover cursor pela posição do dedo
                     scroll_prev_y = None
                     raw_x, raw_y  = _map_to_screen(right_lm[INDEX_TIP].x,
                                                    right_lm[INDEX_TIP].y)
-                    # Pipeline: mediana → One Euro Filter → zona morta
+                    # Sempre alimenta os filtros para não acumular lag
                     sx = int(filt_x(median_x(raw_x)))
                     sy = int(filt_y(median_y(raw_y)))
-                    if math.hypot(sx - cursor_x, sy - cursor_y) > CURSOR_DEAD_ZONE:
-                        pyautogui.moveTo(sx, sy)
-                        cursor_x, cursor_y = sx, sy
+                    # Congela cursor enquanto gesto de clique está sendo ativado
+                    if not thumb_up and not pinky_ext:
+                        if math.hypot(sx - cursor_x, sy - cursor_y) > CURSOR_DEAD_ZONE:
+                            pyautogui.moveTo(sx, sy)
+                            cursor_x, cursor_y = sx, sy
 
                 else:
                     scroll_prev_y = None
 
                 # Gestos de clique — só ativos fora do modo scroll
                 if not (idx_ext and mid_ext):
-                    thumb_up  = right_lm[THUMB_TIP].y < right_lm[THUMB_IP].y
-                    pinky_ext = _extended(right_lm, PINKY_TIP, PINKY_PIP)
-
                     if lclick_det.update(thumb_up) and now - last_click_t > CLICK_COOLDOWN:
                         pyautogui.click()
                         last_click_t = now
