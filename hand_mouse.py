@@ -56,9 +56,10 @@ pyautogui.PAUSE    = 0
 SCREEN_W, SCREEN_H = pyautogui.size()
 
 # Índices dos landmarks do MediaPipe
+WRIST      = 0
 THUMB_TIP  = 4;  THUMB_IP   = 3
-INDEX_TIP  = 8;  INDEX_PIP  = 6
-MIDDLE_TIP = 12; MIDDLE_PIP = 10
+INDEX_TIP  = 8;  INDEX_PIP  = 6;  INDEX_MCP  = 5
+MIDDLE_TIP = 12; MIDDLE_PIP = 10; MIDDLE_MCP = 9
 RING_TIP   = 16; RING_PIP   = 14
 PINKY_TIP  = 20; PINKY_PIP  = 18
 
@@ -230,10 +231,18 @@ def main():
 
                 idx_ext   = _extended(right_lm, INDEX_TIP, INDEX_PIP)
                 mid_ext   = _extended(right_lm, MIDDLE_TIP, MIDDLE_PIP)
-                thumb_up  = right_lm[THUMB_TIP].y < right_lm[THUMB_IP].y
-                pinky_ext = _extended(right_lm, PINKY_TIP, PINKY_PIP)
+                ring_ext  = _extended(right_lm, RING_TIP,   RING_PIP)
+                pinky_ext = _extended(right_lm, PINKY_TIP,  PINKY_PIP)
 
-                if idx_ext and mid_ext:
+                # Polegar levantado: usa altura relativa da mão como escala
+                # (robusto a distância da câmera)
+                hand_h   = max(right_lm[WRIST].y - right_lm[MIDDLE_MCP].y, 0.01)
+                thumb_up = (right_lm[WRIST].y - right_lm[THUMB_TIP].y) > hand_h
+
+                # Sinal da paz estrito: só indicador e médio, anel e mindinho fechados
+                peace_sign = idx_ext and mid_ext and not ring_ext and not pinky_ext
+
+                if peace_sign:
                     # Sinal de paz (V) → scroll vertical
                     ref_y = (right_lm[INDEX_TIP].y + right_lm[MIDDLE_TIP].y) / 2
                     if scroll_prev_y is not None:
@@ -261,7 +270,7 @@ def main():
                     scroll_prev_y = None
 
                 # Gestos de clique — só ativos fora do modo scroll
-                if not (idx_ext and mid_ext):
+                if not peace_sign:
                     if lclick_det.update(thumb_up) and now - last_click_t > CLICK_COOLDOWN:
                         pyautogui.click()
                         last_click_t = now
