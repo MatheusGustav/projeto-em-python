@@ -11,6 +11,7 @@ GESTOS (mão direita):
 PARAR: Ctrl+Shift+Q
 """
 
+import collections
 import threading
 import math
 import time
@@ -30,14 +31,20 @@ PINCH_THRESH   = 0.065  # distância normalizada para detectar pinça
 PINCH_FRAMES   = 4      # frames consecutivos para confirmar pinça (anti-clique-acidental)
 
 # One Euro Filter — ajuste fino da suavização:
-#   min_cutoff: menor = mais suave (mais lag); maior = mais responsivo (mais jitter)
-#   beta:       maior = menos lag em movimentos rápidos
-OEF_MIN_CUTOFF = 0.8
-OEF_BETA       = 0.07
+#   min_cutoff: menor = mais suave em repouso (remove tremor); maior = mais responsivo
+#   beta:       maior = menos lag em movimentos rápidos intencionais
+OEF_MIN_CUTOFF = 0.05   # muito suave em repouso — elimina tremor de braço
+OEF_BETA       = 0.6    # responde rápido a movimentos intencionais
+
+# Filtro de mediana antes do One Euro: remove picos de glitch do tracking
+MEDIAN_SIZE = 7         # número de amostras (ímpar)
+
+# Zona morta em pixels: cursor só move se a mudança for maior que isso
+CURSOR_DEAD_ZONE = 5    # pixels — movimentos menores são tremor, ignorar
 
 # Margem do frame da câmera mapeada para a borda da tela.
-# 0.12 = os 12% das bordas do frame cobrem os extremos da tela.
-MARGIN = 0.12
+# 0.15 = os 15% das bordas do frame cobrem os extremos da tela.
+MARGIN = 0.15
 
 SCROLL_DEADZONE = 0.003  # movimento mínimo normalizado para acionar scroll
 SCROLL_SCALE    = 200    # multiplicador: delta_norm * SCROLL_SCALE = clicks de scroll
@@ -57,6 +64,20 @@ PINKY_TIP  = 20; PINKY_PIP  = 18
 
 
 # ── Filtros ────────────────────────────────────────────────────────────────────
+
+class MedianFilter:
+    """Remove picos de glitch do tracking mantendo um buffer circular de amostras."""
+
+    def __init__(self, size=MEDIAN_SIZE):
+        self.buf = collections.deque(maxlen=size)
+
+    def __call__(self, x):
+        self.buf.append(x)
+        return sorted(self.buf)[len(self.buf) // 2]
+
+    def reset(self):
+        self.buf.clear()
+
 
 class _LowPass:
     def __init__(self, alpha):
@@ -153,6 +174,8 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
+    median_x           = MedianFilter()
+    median_y           = MedianFilter()
     filt_x             = OneEuroFilter(fps)
     filt_y             = OneEuroFilter(fps)
     lclick_det         = GestureDetector()  # polegar levantado → clique esquerdo
@@ -160,6 +183,7 @@ def main():
     last_click_t       = 0.0
     scroll_prev_y      = None
     prev_right_visible = False
+    cursor_x, cursor_y = pyautogui.position()
 
     options = HandLandmarkerOptions(
         base_options=python.BaseOptions(model_asset_buffer=_load_hand_model()),
@@ -199,9 +223,9 @@ def main():
             # ── Mão direita: cursor + clique esquerdo + scroll ─────────────────
             if right_lm is not None:
                 if not prev_right_visible:
-                    # Reseta filtro para não arrastar de posição antiga
-                    filt_x.reset()
-                    filt_y.reset()
+                    # Reseta filtros para não arrastar de posição antiga
+                    median_x.reset(); median_y.reset()
+                    filt_x.reset();   filt_y.reset()
                 prev_right_visible = True
 
                 idx_ext = _extended(right_lm, INDEX_TIP, INDEX_PIP)
@@ -223,7 +247,12 @@ def main():
                     scroll_prev_y = None
                     raw_x, raw_y  = _map_to_screen(right_lm[INDEX_TIP].x,
                                                    right_lm[INDEX_TIP].y)
-                    pyautogui.moveTo(int(filt_x(raw_x)), int(filt_y(raw_y)))
+                    # Pipeline: mediana → One Euro Filter → zona morta
+                    sx = int(filt_x(median_x(raw_x)))
+                    sy = int(filt_y(median_y(raw_y)))
+                    if math.hypot(sx - cursor_x, sy - cursor_y) > CURSOR_DEAD_ZONE:
+                        pyautogui.moveTo(sx, sy)
+                        cursor_x, cursor_y = sx, sy
 
                 else:
                     scroll_prev_y = None
